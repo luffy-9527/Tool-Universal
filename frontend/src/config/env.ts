@@ -9,7 +9,7 @@ export const APP_ENV = {
   USE_CLOUDRUN: true,
 
   /** 微信云托管环境 ID（在微信云托管控制台 -> 环境总览中查看） */
-  CLOUD_ENV_ID: 'prod-xxxxxxx',
+  CLOUD_ENV_ID: 'node-d6gnuhd1oa52dabe8',
 
   /** 微信云托管服务名 */
   CLOUD_SERVICE_NAME: 'tool-api',

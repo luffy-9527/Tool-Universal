@@ -1,17 +1,19 @@
-# syntax=docker/dockerfile:1
 # 微信云托管 & Docker 通用生产镜像（支持 Node.js + FFmpeg + LibreOffice + Poppler + 中文字体）
 
 FROM node:20-bookworm-slim AS builder
 
 WORKDIR /workspace
 
-RUN corepack enable && (corepack prepare pnpm@9.6.0 --activate || npm install -g pnpm@9.6.0 --registry=https://registry.npmmirror.com)
+ENV npm_config_registry=https://mirrors.cloud.tencent.com/npm/
+
+RUN npm install -g pnpm@9.6.0 --registry=https://mirrors.cloud.tencent.com/npm/ && \
+    pnpm config set registry https://mirrors.cloud.tencent.com/npm/
 
 COPY package.json pnpm-workspace.yaml ./
 COPY packages/shared/package.json ./packages/shared/
 COPY backend/package.json ./backend/
 
-RUN pnpm --filter @tool-universal/shared --filter @tool-universal/backend install --no-frozen-lockfile --ignore-scripts --registry=https://registry.npmmirror.com
+RUN pnpm --filter @tool-universal/shared --filter @tool-universal/backend install --no-frozen-lockfile --ignore-scripts --registry=https://mirrors.cloud.tencent.com/npm/
 
 COPY packages/shared ./packages/shared
 COPY backend ./backend
@@ -38,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-cjk \
     fontconfig \
     ca-certificates \
-    && fc-cache -fv \
+    && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
