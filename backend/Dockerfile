@@ -5,20 +5,20 @@ FROM node:20-bookworm-slim AS builder
 
 WORKDIR /workspace
 
-RUN corepack enable && corepack prepare pnpm@9.6.0 --activate
+RUN corepack enable && (corepack prepare pnpm@9.6.0 --activate || npm install -g pnpm@9.6.0 --registry=https://registry.npmmirror.com)
 
 COPY package.json pnpm-workspace.yaml ./
 COPY packages/shared/package.json ./packages/shared/
 COPY backend/package.json ./backend/
 
-RUN pnpm --filter @tool-universal/shared --filter @tool-universal/backend install --no-frozen-lockfile
+RUN pnpm --filter @tool-universal/shared --filter @tool-universal/backend install --no-frozen-lockfile --ignore-scripts --registry=https://registry.npmmirror.com
 
 COPY packages/shared ./packages/shared
 COPY backend ./backend
 
 RUN pnpm --filter @tool-universal/shared build && \
     pnpm --filter @tool-universal/backend build && \
-    pnpm --filter @tool-universal/backend --prod deploy /app/deploy
+    pnpm --filter @tool-universal/backend --prod deploy --ignore-scripts /app/deploy
 
 # ================= 运行时精简镜像 =================
 FROM node:20-bookworm-slim AS runner
