@@ -1,0 +1,59 @@
+import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
+import Fastify, { type FastifyInstance } from 'fastify';
+import type { AppConfig } from './config.js';
+import { createTaskExecutor } from './processors/index.js';
+import { TaskManager } from './queue/taskManager.js';
+import { registerFileRoutes } from './routes/files.js';
+import { registerHealthRoutes } from './routes/health.js';
+import { registerTaskRoutes } from './routes/tasks.js';
+import { HybridStorageService } from './storage/localStorage.js';
+
+export interface AppContext {
+  app: FastifyInstance;
+  storage: HybridStorageService;
+  taskManager: TaskManager;
+}
+
+export async function buildApp(config: AppConfig): Promise<AppContext> {
+  const app = Fastify({
+    logger: process.env.NODE_ENV !== 'test',
+    bodyLimit: 10 * 1024 * 1024,
+  });
+
+  await app.register(cors, {
+    origin: true,
+    methods: ['GET', 'POST', 'OPTIONS'],
+  });
+
+  await app.register(multipart, {
+    limits: {
+      fileSize: config.maxFileSize,
+      files: 30,
+    },
+  });
+
+  const storage = new HybridStorageService(config);
+  await storage.init();
+
+  const executor = createTaskExecutor(config);
+  const taskManager = new TaskManager(config, storage, executor);
+  taskManager.startHousekeeping();
+
+  registerHealthRoutes(app, config);
+  registerFileRoutes(app, storage);
+  registerTaskRoutes(app, taskManager, storage, config);
+
+  app.setErrorHandler((error: any, _request, reply) => {
+    const statusCode = typeof error?.statusCode === 'number' ? error.statusCode : 500;
+    reply.code(statusCode).send({
+      message: error?.message || '服务器内部错误',
+    });
+  });
+
+  app.addHook('onClose', async () => {
+    taskManager.stopHousekeeping();
+  });
+
+  return { app, storage, taskManager };
+}

@@ -1,0 +1,46 @@
+{
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": {
+        "navigationBarTitleText": "万能格式转换工具",
+        "navigationStyle": "custom",
+        "backgroundColor": "#DCEBFF"
+      }
+    },
+    {
+      "path": "pages/tool/index",
+      "style": {
+        "navigationBarTitleText": "工具工作台",
+        "navigationBarBackgroundColor": "#FFFFFF",
+        "navigationBarTextStyle": "black",
+        "backgroundColor": "#F4F7FC"
+      }
+    },
+    {
+      "path": "pages/records/index",
+      "style": {
+        "navigationBarTitleText": "转换记录",
+        "navigationBarBackgroundColor": "#FFFFFF",
+        "navigationBarTextStyle": "black",
+        "backgroundColor": "#F4F7FC"
+      }
+    },
+    {
+      "path": "pages/guide/index",
+      "style": {
+        "navigationBarTitleText": "使用说明",
+        "navigationBarBackgroundColor": "#FFFFFF",
+        "navigationBarTextStyle": "black",
+        "backgroundColor": "#F4F7FC"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "万能格式转换工具",
+    "navigationBarBackgroundColor": "#FFFFFF",
+    "backgroundColor": "#F4F7FC"
+  },
+  "uniIdRouter": {}
+}

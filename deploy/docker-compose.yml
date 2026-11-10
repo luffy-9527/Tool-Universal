@@ -1,0 +1,21 @@
+services:
+  tool-api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    container_name: tool-universal-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "80"
+      STORAGE_MODE: local
+      MAX_CONCURRENCY: "2"
+      FILE_TTL_MS: "1800000"
+      CUTOUT_PROVIDER: smart-chroma
+    volumes:
+      - tmp_storage:/app/tmp_storage
+    ports:
+      - "3000:80"
+
+volumes:
+  tmp_storage:

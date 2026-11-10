@@ -1,0 +1,32 @@
+{
+  "name": "万能格式转换工具",
+  "appid": "__UNI__TOOLUNIVERSAL",
+  "description": "轻量 · 极速 · 文档互转",
+  "versionName": "1.0.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "mp-weixin": {
+    "appid": "wxd25b0a5fd599da86",
+    "setting": {
+      "urlCheck": false,
+      "es6": true,
+      "enhance": true,
+      "postcss": false,
+      "minified": false,
+      "compileHotReLoad": true
+    },
+    "usingComponents": true,
+    "lazyCodeLoading": "requiredComponents",
+    "cloud": true
+  },
+  "h5": {
+    "router": {
+      "mode": "hash"
+    },
+    "title": "万能格式转换工具"
+  },
+  "uniStatistics": {
+    "enable": false
+  },
+  "vueVersion": "3"
+}

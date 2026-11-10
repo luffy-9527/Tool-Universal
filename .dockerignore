@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+**/.vite
+backend/tmp_storage
+frontend
+deploy
+.git
+.env
+.env.*
+*.log
+coverage

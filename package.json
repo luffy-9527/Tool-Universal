@@ -1,0 +1,27 @@
+{
+  "name": "tool-universal-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "万能格式转换工具 - UniApp (Vue3 + TS) 前端 + Node.js (Fastify + TS + Docker/微信云托管) 后端",
+  "scripts": {
+    "build:shared": "pnpm --filter @tool-universal/shared build",
+    "dev:backend": "pnpm --filter @tool-universal/backend dev",
+    "build:backend": "pnpm --filter @tool-universal/backend build",
+    "test:backend": "pnpm --filter @tool-universal/backend test",
+    "dev:h5": "pnpm --filter @tool-universal/frontend dev:h5",
+    "dev:mp-weixin": "pnpm --filter @tool-universal/frontend dev:mp-weixin",
+    "build:h5": "pnpm --filter @tool-universal/frontend build:h5",
+    "build:mp-weixin": "pnpm --filter @tool-universal/frontend build:mp-weixin",
+    "typecheck": "pnpm --filter @tool-universal/shared typecheck && pnpm --filter @tool-universal/backend typecheck && pnpm --filter @tool-universal/frontend typecheck"
+  },
+  "pnpm": {
+    "packageExtensions": {
+      "@dcloudio/uni-mp-vite": {
+        "dependencies": {
+          "estree-walker": "2.0.2"
+        }
+      }
+    }
+  },
+  "packageManager": "pnpm@9.6.0"
+}
