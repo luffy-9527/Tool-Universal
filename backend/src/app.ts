@@ -57,3 +57,44 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
 
   return { app, storage, taskManager };
 }
+
+const IPV6_UNSUPPORTED_CODES = new Set([
+  'EAFNOSUPPORT',
+  'EADDRNOTAVAIL',
+  'EINVAL',
+  'ENOPROTOOPT',
+  'EPROTONOSUPPORT',
+  'ENOTSUP',
+]);
+
+export async function listenApp(
+  app: FastifyInstance,
+  config: Pick<AppConfig, 'port' | 'host'>
+): Promise<string> {
+  if (config.host !== '::') {
+    return app.listen({
+      port: config.port,
+      host: config.host,
+    });
+  }
+
+  try {
+    return await app.listen({
+      port: config.port,
+      host: '::',
+      ipv6Only: false,
+    });
+  } catch (err: any) {
+    if (err && typeof err.code === 'string' && IPV6_UNSUPPORTED_CODES.has(err.code)) {
+      app.log.warn(
+        { code: err.code },
+        'Dual-stack IPv6 listen unavailable, falling back to IPv4 0.0.0.0'
+      );
+      return app.listen({
+        port: config.port,
+        host: '0.0.0.0',
+      });
+    }
+    throw err;
+  }
+}

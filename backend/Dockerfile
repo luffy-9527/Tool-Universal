@@ -46,9 +46,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 ENV NODE_ENV=production
-# 微信云托管默认探测 80 端口
+# 微信云托管默认探测 80 端口；使用 :: 开启 IPv6+IPv4 双栈兼容 localhost(::1/127.0.0.1) 与容器网卡
 ENV PORT=80
-ENV HOST=0.0.0.0
+ENV HOST=::
 ENV STORAGE_MODE=cloudbase
 ENV MAX_CONCURRENCY=2
 

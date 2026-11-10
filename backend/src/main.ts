@@ -1,4 +1,4 @@
-import { buildApp } from './app.js';
+import { buildApp, listenApp } from './app.js';
 import { loadConfig } from './config.js';
 
 async function bootstrap(): Promise<void> {
@@ -14,13 +14,10 @@ async function bootstrap(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
-  await app.listen({
-    port: config.port,
-    host: config.host,
-  });
+  const address = await listenApp(app, config);
 
   app.log.info(
-    `Tool-Universal backend listening on http://${config.host}:${config.port} (storageMode=${config.storageMode}, maxConcurrency=${config.maxConcurrency})`
+    `Tool-Universal backend listening on ${address} (storageMode=${config.storageMode}, maxConcurrency=${config.maxConcurrency})`
   );
 }
 

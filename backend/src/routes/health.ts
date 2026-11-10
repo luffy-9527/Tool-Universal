@@ -4,6 +4,15 @@ import type { AppConfig } from '../config.js';
 import { isBinaryAvailable, resolveFfmpegBin } from '../utils/exec.js';
 
 export function registerHealthRoutes(app: FastifyInstance, config: AppConfig): void {
+  app.get('/', async () => {
+    return {
+      ok: true,
+      status: 'UP',
+      service: 'tool-api',
+      timestamp: Date.now(),
+    };
+  });
+
   app.get('/health', async () => {
     return {
       ok: true,

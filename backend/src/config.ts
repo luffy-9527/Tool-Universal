@@ -26,7 +26,7 @@ export function loadConfig(): AppConfig {
 
   return {
     port: Number(process.env.PORT || 3000),
-    host: process.env.HOST || '0.0.0.0',
+    host: process.env.HOST || '::',
     storageMode: storageEnv,
     wxCloudEnv,
     maxConcurrency: Math.max(1, Number(process.env.MAX_CONCURRENCY || 2)),

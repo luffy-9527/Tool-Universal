@@ -16,7 +16,7 @@ import {
   buildPdfFromJpegs,
   bytesToBase64,
 } from '@tool-universal/shared';
-import { buildApp, type AppContext } from '../app.js';
+import { buildApp, listenApp, type AppContext } from '../app.js';
 import type { AppConfig } from '../config.js';
 import { extractImagesFromOfficeZip } from '../processors/officeProcessor.js';
 import { resolveFfmpegBin, runBinary } from '../utils/exec.js';
@@ -113,7 +113,14 @@ describe('Tool-Universal Backend API & Processors', () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('returns health status and canonical 26 tools across 5 categories', async () => {
+  it('returns root probe, health status and canonical 26 tools across 5 categories', async () => {
+    const rootGetRes = await ctx.app.inject({ method: 'GET', url: '/' });
+    expect(rootGetRes.statusCode).toBe(200);
+    expect(rootGetRes.json()).toMatchObject({ ok: true, status: 'UP', service: 'tool-api' });
+
+    const rootHeadRes = await ctx.app.inject({ method: 'HEAD', url: '/' });
+    expect(rootHeadRes.statusCode).toBe(200);
+
     const healthRes = await ctx.app.inject({ method: 'GET', url: '/health' });
     expect(healthRes.statusCode).toBe(200);
     expect(healthRes.json().ok).toBe(true);
@@ -125,6 +132,34 @@ describe('Tool-Universal Backend API & Processors', () => {
     expect(tools).toHaveLength(26);
     expect(tools.some((t: any) => t.id === 'pdf-to-word')).toBe(true);
     expect(tools.some((t: any) => t.id === 'video-to-gif')).toBe(true);
+  });
+
+  it('listens dual-stack on :: with IPv4 fallback only on IPv6 unsupported errors', async () => {
+    const mockListen = async (opts: { port: number; host: string; ipv6Only?: boolean }) => {
+      if (opts.host === '::') {
+        const err = new Error('Address family not supported') as Error & { code: string };
+        err.code = 'EAFNOSUPPORT';
+        throw err;
+      }
+      return `http://${opts.host}:${opts.port}`;
+    };
+    const fakeApp = {
+      listen: mockListen,
+      log: { warn: () => {} },
+    } as any;
+
+    const fallbackAddr = await listenApp(fakeApp, { port: 80, host: '::' });
+    expect(fallbackAddr).toBe('http://0.0.0.0:80');
+
+    const conflictApp = {
+      listen: async () => {
+        const err = new Error('Port in use') as Error & { code: string };
+        err.code = 'EADDRINUSE';
+        throw err;
+      },
+      log: { warn: () => {} },
+    } as any;
+    await expect(listenApp(conflictApp, { port: 80, host: '::' })).rejects.toThrow('Port in use');
   });
 
   it('rejects invalid task submission cleanly', async () => {
