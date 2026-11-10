@@ -1,4 +1,8 @@
-import type { OutputFileRef, WatermarkOptions } from '@tool-universal/shared';
+import {
+  checkCustomTextComplianceLocal,
+  type OutputFileRef,
+  type WatermarkOptions,
+} from '@tool-universal/shared';
 import {
   base64ToBytes,
   buildPdfFromJpegs,
@@ -275,6 +279,12 @@ export async function runImageWatermarkLocal(
   file: LocalPickedFile,
   opts: WatermarkOptions
 ): Promise<OutputFileRef[]> {
+  const text = (opts.text || '仅限办理业务使用 · 他用无效').trim();
+  const localCheck = checkCustomTextComplianceLocal(text);
+  if (!localCheck.allowed) {
+    throw new Error(localCheck.message);
+  }
+
   const probe = createSurface(10, 10);
   const loaded = await loadImageOntoCanvas(probe, file.path);
   const maxDim = 1800;
@@ -284,8 +294,6 @@ export async function runImageWatermarkLocal(
 
   const s = createSurface(w, h);
   s.ctx.drawImage(loaded.image, 0, 0, w, h);
-
-  const text = (opts.text || '仅限办理业务使用 · 他用无效').trim();
   const mode = opts.mode || 'tile';
   const opacity = Math.min(0.9, Math.max(0.08, opts.opacity ?? 0.32));
   const fontSize = Math.round((opts.fontSize ?? 24) * Math.max(1, w / 600));

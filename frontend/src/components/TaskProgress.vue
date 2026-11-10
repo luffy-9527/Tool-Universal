@@ -13,7 +13,7 @@
 
     <!-- Error state -->
     <view v-else-if="errorMessage" class="error-box">
-      <text class="err-title">⚠️ 处理失败</text>
+      <text class="err-title">{{ isComplianceError ? '🛡️ 内容合规安全拦截' : '⚠️ 处理失败' }}</text>
       <text class="err-msg">{{ errorMessage }}</text>
     </view>
 
@@ -100,7 +100,7 @@
 
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue';
-import type { OutputFileRef } from '@tool-universal/shared';
+import { isComplianceBlockMessage, type OutputFileRef } from '@tool-universal/shared';
 import {
   formatBytes,
   saveAllImagesBatch,
@@ -117,6 +117,8 @@ const props = defineProps<{
   errorMessage?: string;
   originalTotalSize?: number;
 }>();
+
+const isComplianceError = computed(() => isComplianceBlockMessage(props.errorMessage));
 
 const playingFileId = ref<string | null>(null);
 let audioCtx: UniApp.InnerAudioContext | null = null;

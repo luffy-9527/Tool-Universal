@@ -23,9 +23,9 @@
     </view>
 
     <view class="guide-card">
-      <view class="g-title">4. 隐私与安全声明</view>
+      <view class="g-title">4. 隐私与内容合规声明</view>
       <view class="g-text">
-        所有纯离线工具仅在你的手机本地内存中完成处理，不上传任何服务器；云端高保真转换的临时文件会在 30 分钟后由后台任务自动彻底销毁，充分保障证件与商业文档隐私。
+        所有纯离线工具的图片文件均在手机本地内存中完成渲染，不留存用户文档；云端高保真转换的临时文件会在处理完成或到期后自动彻底销毁。同时，所有涉及用户输入自定义文字生成图片或文档的功能均已接入内容安全合规检测，若包含违法违规或敏感词汇将即时阻断生成。
       </view>
     </view>
 
@@ -62,7 +62,9 @@ async function checkBackend() {
     const caps = await callBackendApi<CapabilitiesResponse>('/api/capabilities', 'GET');
     diagMessage.value = `✅ 连接正常 | FFmpeg: ${caps.ffmpeg ? '可用' : '未启用'} | PDF渲染: ${
       caps.pdftoppm ? '可用' : '未启用'
-    } | Office排版: ${caps.libreoffice ? 'LibreOffice' : '内置轻量引擎'} | 存储模式: ${caps.storageMode}`;
+    } | Office排版: ${caps.libreoffice ? 'LibreOffice' : '内置轻量引擎'} | 存储模式: ${caps.storageMode}${
+      caps.contentSecurity ? ` | 内容合规: ${caps.contentSecurity}` : ''
+    }`;
   } catch (err: any) {
     diagError.value = true;
     diagMessage.value = `❌ ${err?.message || '无法连接后端服务'}`;

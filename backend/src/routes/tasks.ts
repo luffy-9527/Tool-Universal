@@ -7,6 +7,11 @@ import { TOOL_MAP, type ToolId } from '@tool-universal/shared';
 import type { AppConfig } from '../config.js';
 import { inspectPdfFile } from '../processors/pdfProcessor.js';
 import type { TaskManager } from '../queue/taskManager.js';
+import {
+  extractClientWxOpenId,
+  extractTaskCustomTexts,
+  verifyCustomTextCompliance,
+} from '../security/contentSecurity.js';
 import type { StorageProvider } from '../storage/index.js';
 
 const UploadedFileSchema = z.object({
@@ -48,6 +53,26 @@ export function registerTaskRoutes(
       return reply.code(400).send({
         message: `${tool.title} 最多支持 ${tool.maxFiles} 个文件`,
       });
+    }
+
+    const customTexts = extractTaskCustomTexts(parsed.data);
+    if (customTexts.length > 0) {
+      const openid = extractClientWxOpenId(request.headers);
+      for (const item of customTexts) {
+        const verdict = await verifyCustomTextCompliance(item.text, config, {
+          openid,
+          scene: 2,
+        });
+        if (!verdict.allowed) {
+          await storage.deleteCloudInputFiles(parsed.data.files).catch(() => 0);
+          const statusCode = verdict.reasonCode === 'CONTENT_SECURITY_UNAVAILABLE' ? 503 : 400;
+          return reply.code(statusCode).send({
+            code: verdict.reasonCode,
+            category: verdict.category,
+            message: verdict.message,
+          });
+        }
+      }
     }
 
     const record = taskManager.submit(parsed.data);

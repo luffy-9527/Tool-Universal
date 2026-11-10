@@ -15,10 +15,13 @@ import {
   base64ToBytes,
   buildPdfFromJpegs,
   bytesToBase64,
+  checkCustomTextComplianceLocal,
+  isComplianceBlockMessage,
 } from '@tool-universal/shared';
 import { buildApp, listenApp, type AppContext } from '../app.js';
 import type { AppConfig } from '../config.js';
 import { extractImagesFromOfficeZip } from '../processors/officeProcessor.js';
+import { applyPdfWatermark } from '../processors/pdfProcessor.js';
 import { deleteFromCloudBase } from '../storage/cloudStorage.js';
 import { resolveFfmpegBin, runBinary } from '../utils/exec.js';
 
@@ -2083,6 +2086,305 @@ describe('Tool-Universal Backend API & Processors', () => {
       }
       vi.unstubAllGlobals();
       await fs.rm(cloudTmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('intercepts prohibited custom text across /api/compliance/text-check, /api/tasks, and PDF watermark rendering', async () => {
+    // 1. Benign business watermarks & corporate codes pass local guard without false positives
+    for (const safeText of [
+      '仅供实名认证使用 · 他用无效',
+      '仅供内部参考 · 禁止外传',
+      '机密合同 · 仅供内审',
+      '公司编号 SB-2026 专用',
+    ]) {
+      const checkRes = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/compliance/text-check',
+        payload: { text: safeText, scene: 'watermark' },
+      });
+      expect(checkRes.statusCode).toBe(200);
+      expect(checkRes.json().allowed).toBe(true);
+    }
+
+    // 2. Prohibited words & obfuscated variants are blocked immediately
+    for (const badText of ['办假证联系我', '办·假·证', '网 赌平台', '法轮功宣传', 'ＩＳＩＳ测试', '冰毒购买']) {
+      const local = checkCustomTextComplianceLocal(badText);
+      expect(local.allowed).toBe(false);
+      expect(isComplianceBlockMessage(local.message)).toBe(true);
+
+      const checkRes = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/compliance/text-check',
+        payload: { text: badText, scene: 'image' },
+      });
+      expect(checkRes.statusCode).toBe(200);
+      const body = checkRes.json();
+      expect(body.allowed).toBe(false);
+      expect(body.reasonCode).toBe('CONTENT_COMPLIANCE_BLOCKED');
+      expect(isComplianceBlockMessage(body.message)).toBe(true);
+    }
+
+    // Overlong custom text is rejected
+    const longRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/compliance/text-check',
+      payload: { text: '合法合规字'.repeat(120), scene: 'document' },
+    });
+    expect(longRes.statusCode).toBe(200);
+    expect(longRes.json().allowed).toBe(false);
+    expect(longRes.json().reasonCode).toBe('CONTENT_LENGTH_EXCEEDED');
+
+    // Direct call to applyPdfWatermark enforces local compliance defense-in-depth
+    const samplePdfPath = path.join(tmpDir, 'compliance_sample.pdf');
+    const blockedOutPath = path.join(tmpDir, 'compliance_blocked_out.pdf');
+    await fs.writeFile(samplePdfPath, await createSamplePdf(1));
+    await expect(
+      applyPdfWatermark(samplePdfPath, blockedOutPath, { enabled: true, text: '办·假·证' })
+    ).rejects.toThrow(/内容合规拦截/);
+    await expect(fs.access(blockedOutPath)).rejects.toThrow();
+
+    // 3. WeChat wxa/msg_sec_check v2 integration + fail-closed + CloudBase input cleanup on rejection
+    const secCheckCalls: Array<{ version: number; scene: number; openid: string; content: string }> = [];
+    const deletedInputIds: string[] = [];
+    let mockMode: 'pass' | 'risky' | 'review' | 'err87014' | 'http502' = 'pass';
+
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith('/wxa/msg_sec_check')) {
+        if (mockMode === 'http502') {
+          return new Response('Bad Gateway', { status: 502 });
+        }
+        const body = JSON.parse(String(init?.body || '{}'));
+        secCheckCalls.push(body);
+        if (mockMode === 'err87014') {
+          return new Response(
+            JSON.stringify({ errcode: 87014, errmsg: 'risky content' }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        }
+        if (mockMode === 'risky') {
+          return new Response(
+            JSON.stringify({
+              errcode: 0,
+              errmsg: 'ok',
+              result: { suggest: 'risky', label: 20001 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        }
+        if (mockMode === 'review') {
+          return new Response(
+            JSON.stringify({
+              errcode: 0,
+              errmsg: 'ok',
+              result: { suggest: 'review', label: 10001 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            errcode: 0,
+            errmsg: 'ok',
+            result: { suggest: 'pass', label: 100 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      if (url.endsWith('/tcb/batchdeletefile')) {
+        const body = JSON.parse(String(init?.body || '{}'));
+        deletedInputIds.push(...(body.fileid_list as string[]));
+        return new Response(
+          JSON.stringify({
+            errcode: 0,
+            errmsg: 'ok',
+            delete_list: (body.fileid_list as string[]).map((fileid) => ({
+              fileid,
+              status: 0,
+              errmsg: 'ok',
+            })),
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+
+    const cloudSecTmp = await fs.mkdtemp(path.join(os.tmpdir(), 'tool-universal-compliance-'));
+    let cloudSecCtx: AppContext | undefined;
+    try {
+      cloudSecCtx = await buildApp({
+        port: 0,
+        host: '127.0.0.1',
+        storageMode: 'cloudbase',
+        wxCloudEnv: 'env-test',
+        maxConcurrency: 1,
+        maxFileSize: 10 * 1024 * 1024,
+        fileTtlMs: 30 * 60 * 1000,
+        tmpRootDir: cloudSecTmp,
+        cutoutProvider: 'smart-chroma',
+        rembgEndpoint: '',
+      });
+
+      const wxHeaders = { 'x-wx-openid': 'openid_test_user_123' };
+
+      // V2 msg_sec_check pass
+      mockMode = 'pass';
+      const wxPass = await cloudSecCtx.app.inject({
+        method: 'POST',
+        url: '/api/compliance/text-check',
+        headers: wxHeaders,
+        payload: { text: '仅供房屋租赁签约核验使用', scene: 'image' },
+      });
+      expect(wxPass.statusCode).toBe(200);
+      expect(wxPass.json().allowed).toBe(true);
+      expect(wxPass.json().source).toBe('wechat-msg-sec-check');
+      expect(secCheckCalls[0]).toEqual({
+        version: 2,
+        scene: 2,
+        openid: 'openid_test_user_123',
+        content: '仅供房屋租赁签约核验使用',
+      });
+
+      // V2 msg_sec_check risky -> blocked with category prompt
+      mockMode = 'risky';
+      const wxRisky = await cloudSecCtx.app.inject({
+        method: 'POST',
+        url: '/api/compliance/text-check',
+        headers: wxHeaders,
+        payload: { text: '微信云端敏感测试词A', scene: 'image' },
+      });
+      expect(wxRisky.statusCode).toBe(200);
+      expect(wxRisky.json().allowed).toBe(false);
+      expect(wxRisky.json().category).toBe('时政敏感信息');
+      expect(isComplianceBlockMessage(wxRisky.json().message)).toBe(true);
+
+      // V2 msg_sec_check review -> blocked immediately too
+      mockMode = 'review';
+      const wxReview = await cloudSecCtx.app.inject({
+        method: 'POST',
+        url: '/api/compliance/text-check',
+        headers: wxHeaders,
+        payload: { text: '疑似推广引流测试文案B', scene: 'watermark' },
+      });
+      expect(wxReview.statusCode).toBe(200);
+      expect(wxReview.json().allowed).toBe(false);
+      expect(wxReview.json().suggest).toBe('review');
+      expect(wxReview.json().category).toBe('广告或恶意引流内容');
+
+      // errcode 87014 -> blocked
+      mockMode = 'err87014';
+      const wx87014 = await cloudSecCtx.app.inject({
+        method: 'POST',
+        url: '/api/compliance/text-check',
+        headers: wxHeaders,
+        payload: { text: '微信旧版错误码测试词C', scene: 'document' },
+      });
+      expect(wx87014.statusCode).toBe(200);
+      expect(wx87014.json().allowed).toBe(false);
+      expect(wx87014.json().reasonCode).toBe('CONTENT_COMPLIANCE_BLOCKED');
+
+      // HTTP 502 from WeChat OpenAPI -> fail-closed HTTP 503
+      mockMode = 'http502';
+      const wxUnavailable = await cloudSecCtx.app.inject({
+        method: 'POST',
+        url: '/api/compliance/text-check',
+        headers: wxHeaders,
+        payload: { text: '安全检查异常测试文本D', scene: 'image' },
+      });
+      expect(wxUnavailable.statusCode).toBe(503);
+      expect(wxUnavailable.json().allowed).toBe(false);
+      expect(wxUnavailable.json().reasonCode).toBe('CONTENT_SECURITY_UNAVAILABLE');
+
+      // POST /api/tasks synchronously blocks pdf-watermark / word-to-pdf / ppt-to-pdf and cleans CloudBase input
+      mockMode = 'risky';
+      const blockedCloudPdfId = 'cloud://env-test.bucket/tmp-inputs/blocked_wm.pdf';
+      const blockedTaskRes = await cloudSecCtx.app.inject({
+        method: 'POST',
+        url: '/api/tasks',
+        headers: wxHeaders,
+        payload: {
+          toolId: 'pdf-watermark',
+          files: [
+            {
+              fileId: blockedCloudPdfId,
+              fileName: 'blocked_wm.pdf',
+              size: 1024,
+              source: 'cloudbase',
+            },
+          ],
+          params: {
+            watermark: {
+              enabled: true,
+              text: '云端检测拦截的水印词',
+            },
+          },
+        },
+      });
+      expect(blockedTaskRes.statusCode).toBe(400);
+      expect(blockedTaskRes.json().code).toBe('CONTENT_COMPLIANCE_BLOCKED');
+      expect(deletedInputIds).toContain(blockedCloudPdfId);
+
+      // Word -> PDF with locally violating watermark rejected synchronously with HTTP 400
+      const blockedWordTaskRes = await cloudSecCtx.app.inject({
+        method: 'POST',
+        url: '/api/tasks',
+        headers: wxHeaders,
+        payload: {
+          toolId: 'word-to-pdf',
+          files: [
+            {
+              fileId: 'cloud://env-test.bucket/tmp-inputs/blocked_word.docx',
+              fileName: 'blocked_word.docx',
+              size: 1024,
+              source: 'cloudbase',
+            },
+          ],
+          params: {
+            watermark: {
+              enabled: true,
+              text: '代开假发票联系',
+            },
+          },
+        },
+      });
+      expect(blockedWordTaskRes.statusCode).toBe(400);
+      expect(blockedWordTaskRes.json().code).toBe('CONTENT_COMPLIANCE_BLOCKED');
+      expect(deletedInputIds).toContain('cloud://env-test.bucket/tmp-inputs/blocked_word.docx');
+
+      // Fail-closed HTTP 503 on PPT -> PDF watermark if OpenAPI unavailable
+      mockMode = 'http502';
+      const unavailableTaskRes = await cloudSecCtx.app.inject({
+        method: 'POST',
+        url: '/api/tasks',
+        headers: wxHeaders,
+        payload: {
+          toolId: 'ppt-to-pdf',
+          files: [
+            {
+              fileId: 'cloud://env-test.bucket/tmp-inputs/blocked_ppt.pptx',
+              fileName: 'blocked_ppt.pptx',
+              size: 1024,
+              source: 'cloudbase',
+            },
+          ],
+          params: {
+            watermark: {
+              enabled: true,
+              text: '正常业务水印文字',
+            },
+          },
+        },
+      });
+      expect(unavailableTaskRes.statusCode).toBe(503);
+      expect(unavailableTaskRes.json().code).toBe('CONTENT_SECURITY_UNAVAILABLE');
+      expect(deletedInputIds).toContain('cloud://env-test.bucket/tmp-inputs/blocked_ppt.pptx');
+    } finally {
+      if (cloudSecCtx) {
+        await cloudSecCtx.app.close();
+      }
+      vi.unstubAllGlobals();
+      await fs.rm(cloudSecTmp, { recursive: true, force: true });
     }
   });
 });

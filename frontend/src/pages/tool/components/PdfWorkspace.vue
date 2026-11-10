@@ -59,7 +59,19 @@
     <template v-else-if="tool.id === 'pdf-watermark'">
       <view class="ws-field">
         <view class="ws-label-row"><text class="ws-label">水印内容</text></view>
-        <input v-model="watermarkText" class="ws-input" placeholder="如：仅供XX公司入职核验使用" />
+        <input
+          v-model="watermarkText"
+          maxlength="120"
+          class="ws-input"
+          :class="{ 'ws-input--danger': Boolean(pdfWmComplianceWarning) }"
+          placeholder="如：仅供XX公司入职核验使用"
+        />
+        <view v-if="pdfWmComplianceWarning" class="ws-compliance-err">
+          {{ pdfWmComplianceWarning }}
+        </view>
+        <view v-else class="ws-compliance-tip">
+          🛡️ 已接入内容安全合规检测，严禁输入违法违规及敏感词汇
+        </view>
       </view>
       <view class="ws-field">
         <view class="ws-label-row"><text class="ws-label">排版模式</text></view>
@@ -174,9 +186,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { OutputFileRef, ToolMeta, ToolParams } from '@tool-universal/shared';
 import { runImagesToPdfLocal } from '@/utils/canvasEngine';
+import {
+  ensureCustomTextCompliant,
+  getLocalTextComplianceWarning,
+  isComplianceError,
+  showComplianceBlockModal,
+} from '@/utils/compliance';
 import { executeCloudToolTask, inspectPdfRemote, type LocalPickedFile } from '@/utils/request';
 
 const props = defineProps<{
@@ -197,6 +215,7 @@ const margin = ref(20);
 const useLocalPdf = ref(true);
 
 const watermarkText = ref('仅限办理业务使用 · 他用无效');
+const pdfWmComplianceWarning = computed(() => getLocalTextComplianceWarning(watermarkText.value));
 const watermarkMode = ref<'tile' | 'center'>('tile');
 const watermarkFontSize = ref(22);
 const watermarkAngle = ref(-30);
@@ -315,6 +334,22 @@ async function startConvert() {
       return;
     }
 
+    let watermarkParam: ToolParams['watermark'];
+    if (props.tool.id === 'pdf-watermark') {
+      const effectiveWmText = watermarkText.value.trim() || '内部文档';
+      emit('progress', 18, '正在进行内容安全合规检测...');
+      await ensureCustomTextCompliant(effectiveWmText, 'document');
+      watermarkParam = {
+        enabled: true,
+        text: effectiveWmText,
+        mode: watermarkMode.value,
+        fontSize: watermarkFontSize.value,
+        angle: watermarkAngle.value,
+        opacity: opacity.value,
+        color: watermarkColor.value,
+      };
+    }
+
     const params: ToolParams = {
       pageSize: pageSize.value,
       margin: margin.value,
@@ -325,15 +360,7 @@ async function startConvert() {
       preserveImages: preserveImages.value,
       imageFormat: imageFormat.value,
       dpi: dpi.value,
-      watermark: {
-        enabled: true,
-        text: watermarkText.value.trim() || '内部文档',
-        mode: watermarkMode.value,
-        fontSize: watermarkFontSize.value,
-        angle: watermarkAngle.value,
-        opacity: opacity.value,
-        color: watermarkColor.value,
-      },
+      watermark: watermarkParam,
     };
 
     const task = await executeCloudToolTask(props.tool.id, props.files, params, (p, s) => {
@@ -341,7 +368,11 @@ async function startConvert() {
     });
     emit('done', task.outputs, 'cloud');
   } catch (err: any) {
-    emit('error', err?.message || 'PDF 处理失败');
+    const msg = err?.message || 'PDF 处理失败';
+    if (isComplianceError(err)) {
+      showComplianceBlockModal(msg);
+    }
+    emit('error', msg);
   }
 }
 </script>

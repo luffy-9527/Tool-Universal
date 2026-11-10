@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { AppConfig } from './config.js';
 import { createTaskExecutor } from './processors/index.js';
 import { TaskManager } from './queue/taskManager.js';
+import { registerComplianceRoutes } from './routes/compliance.js';
 import { registerFileRoutes } from './routes/files.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerTaskRoutes } from './routes/tasks.js';
@@ -41,6 +42,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   taskManager.startHousekeeping();
 
   registerHealthRoutes(app, config);
+  registerComplianceRoutes(app, config);
   registerFileRoutes(app, storage);
   registerTaskRoutes(app, taskManager, storage, config);
 

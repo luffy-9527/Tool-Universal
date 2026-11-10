@@ -11,7 +11,19 @@
       <template v-if="watermarkEnabled">
         <view class="ws-field">
           <view class="ws-label-row"><text class="ws-label">水印文字</text></view>
-          <input v-model="watermarkText" class="ws-input" placeholder="如：仅供内部审核使用" />
+          <input
+            v-model="watermarkText"
+            maxlength="120"
+            class="ws-input"
+            :class="{ 'ws-input--danger': Boolean(officeWmComplianceWarning) }"
+            placeholder="如：仅供内部审核使用"
+          />
+          <view v-if="officeWmComplianceWarning" class="ws-compliance-err">
+            {{ officeWmComplianceWarning }}
+          </view>
+          <view v-else class="ws-compliance-tip">
+            🛡️ 已接入内容安全合规检测，严禁输入违法违规及敏感词汇
+          </view>
         </view>
         <view class="ws-field">
           <view class="ws-label-row"><text class="ws-label">水印样式</text></view>
@@ -105,9 +117,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { OutputFileRef, ToolMeta, ToolParams } from '@tool-universal/shared';
 import { runScanEnhanceLocal } from '@/utils/canvasEngine';
+import {
+  ensureCustomTextCompliant,
+  getLocalTextComplianceWarning,
+  isComplianceError,
+  showComplianceBlockModal,
+} from '@/utils/compliance';
 import { executeCloudToolTask, type LocalPickedFile } from '@/utils/request';
 
 const props = defineProps<{
@@ -125,6 +143,9 @@ const emit = defineEmits<{
 
 const watermarkEnabled = ref(false);
 const watermarkText = ref('仅供内部参考 · 禁止外传');
+const officeWmComplianceWarning = computed(() =>
+  watermarkEnabled.value ? getLocalTextComplianceWarning(watermarkText.value) : ''
+);
 const watermarkMode = ref<'tile' | 'center'>('tile');
 const landscape = ref<boolean | 'auto'>('auto');
 const fitToPage = ref(true);
@@ -158,6 +179,15 @@ async function startConvert() {
       return;
     }
 
+    const hasWatermark =
+      (props.tool.id === 'word-to-pdf' || props.tool.id === 'ppt-to-pdf') && watermarkEnabled.value;
+    const effectiveWmText = hasWatermark ? watermarkText.value.trim() || '仅供内部参考' : '';
+
+    if (hasWatermark) {
+      emit('progress', 18, '正在进行内容安全合规检测...');
+      await ensureCustomTextCompliant(effectiveWmText, 'document');
+    }
+
     const params: ToolParams = {
       outputStyle: outputStyle.value,
       imageFormat: imageFormat.value,
@@ -165,10 +195,10 @@ async function startConvert() {
       landscape: landscape.value,
       fitToPage: fitToPage.value,
       enhanceStrength: enhanceStrength.value,
-      watermark: watermarkEnabled.value
+      watermark: hasWatermark
         ? {
             enabled: true,
-            text: watermarkText.value.trim() || '仅供内部参考',
+            text: effectiveWmText,
             mode: watermarkMode.value,
             opacity: 0.25,
           }
@@ -180,7 +210,11 @@ async function startConvert() {
     });
     emit('done', task.outputs, 'cloud');
   } catch (err: any) {
-    emit('error', err?.message || '处理失败');
+    const msg = err?.message || '处理失败';
+    if (isComplianceError(err)) {
+      showComplianceBlockModal(msg);
+    }
+    emit('error', msg);
   }
 }
 </script>

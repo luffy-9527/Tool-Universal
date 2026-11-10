@@ -4,7 +4,13 @@ import fontkit from '@pdf-lib/fontkit';
 import * as mupdf from 'mupdf';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import sharp from 'sharp';
-import type { OutputFileRef, PdfInspectResponse, ToolParams, WatermarkOptions } from '@tool-universal/shared';
+import {
+  checkCustomTextComplianceLocal,
+  type OutputFileRef,
+  type PdfInspectResponse,
+  type ToolParams,
+  type WatermarkOptions,
+} from '@tool-universal/shared';
 import type { ProcessContext } from '../queue/taskManager.js';
 import { isBinaryAvailable, runBinary } from '../utils/exec.js';
 import { findCjkFontPath } from '../utils/fontLoader.js';
@@ -98,6 +104,10 @@ export async function applyPdfWatermark(
   const bytes = await fs.readFile(inputPdfPath);
   const pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
   const text = (opts?.text || '仅供内部参考 · 禁止外传').trim();
+  const localCompliance = checkCustomTextComplianceLocal(text);
+  if (!localCompliance.allowed) {
+    throw new Error(localCompliance.message);
+  }
   const mode = opts?.mode || 'tile';
   const opacity = Math.min(0.85, Math.max(0.08, opts?.opacity ?? 0.25));
   const fontSize = Math.min(64, Math.max(12, opts?.fontSize ?? 22));

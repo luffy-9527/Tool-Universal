@@ -126,7 +126,19 @@
       </view>
       <view class="ws-field">
         <view class="ws-label-row"><text class="ws-label">自定义水印文字</text></view>
-        <input v-model="imgWmText" class="ws-input" placeholder="输入防盗文字" />
+        <input
+          v-model="imgWmText"
+          maxlength="120"
+          class="ws-input"
+          :class="{ 'ws-input--danger': Boolean(imgWmComplianceWarning) }"
+          placeholder="输入防盗文字"
+        />
+        <view v-if="imgWmComplianceWarning" class="ws-compliance-err">
+          {{ imgWmComplianceWarning }}
+        </view>
+        <view v-else class="ws-compliance-tip">
+          🛡️ 已接入内容安全合规检测，严禁输入违法违规及敏感词汇
+        </view>
       </view>
       <view class="ws-field">
         <view class="ws-label-row"><text class="ws-label">布局模式</text></view>
@@ -201,7 +213,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import type { OutputFileRef, ToolMeta } from '@tool-universal/shared';
 import {
   runGridSplitLocal,
@@ -211,6 +223,12 @@ import {
   runLongImageSplitLocal,
   runLongStitchLocal,
 } from '@/utils/canvasEngine';
+import {
+  ensureCustomTextCompliant,
+  getLocalTextComplianceWarning,
+  isComplianceError,
+  showComplianceBlockModal,
+} from '@/utils/compliance';
 import { executeCloudToolTask, type LocalPickedFile } from '@/utils/request';
 
 const props = defineProps<{
@@ -255,6 +273,7 @@ const stitchBg = ref('#FFFFFF');
 
 const watermarkPresets = ['仅供实名认证使用', '仅限办理租房签约', '仅供入职背调核验'];
 const imgWmText = ref('仅供实名认证使用 · 他用无效');
+const imgWmComplianceWarning = computed(() => getLocalTextComplianceWarning(imgWmText.value));
 const imgWmMode = ref<'tile' | 'center'>('tile');
 const imgWmFontSize = ref(24);
 const imgWmOpacity = ref(0.32);
@@ -335,9 +354,12 @@ async function startConvert() {
     }
 
     if (props.tool.id === 'image-watermark') {
-      emit('progress', 50, '正在绘制防盗文字水印...');
+      const effectiveText = imgWmText.value.trim() || '仅限办理业务使用 · 他用无效';
+      emit('progress', 20, '正在进行内容安全合规检测...');
+      await ensureCustomTextCompliant(effectiveText, 'image');
+      emit('progress', 55, '正在绘制防盗文字水印...');
       const outputs = await runImageWatermarkLocal(props.files[0], {
-        text: imgWmText.value,
+        text: effectiveText,
         mode: imgWmMode.value,
         fontSize: imgWmFontSize.value,
         opacity: imgWmOpacity.value,
@@ -361,7 +383,11 @@ async function startConvert() {
       emit('done', outputs, 'local');
     }
   } catch (err: any) {
-    emit('error', err?.message || '图像生成失败');
+    const msg = err?.message || '图像生成失败';
+    if (isComplianceError(err)) {
+      showComplianceBlockModal(msg);
+    }
+    emit('error', msg);
   }
 }
 </script>

@@ -118,4 +118,27 @@ export interface CapabilitiesResponse {
   pdfimages: boolean;
   cutoutProvider: string;
   storageMode: 'local' | 'cloudbase';
+  contentSecurity?: string;
+}
+
+export type ComplianceSuggest = 'pass' | 'review' | 'risky';
+
+export type ComplianceBlockReasonCode =
+  | 'CONTENT_COMPLIANCE_BLOCKED'
+  | 'CONTENT_LENGTH_EXCEEDED'
+  | 'CONTENT_SECURITY_UNAVAILABLE';
+
+export interface TextComplianceResult {
+  allowed: boolean;
+  suggest: ComplianceSuggest;
+  source: 'local-guard' | 'wechat-msg-sec-check' | 'empty';
+  reasonCode?: ComplianceBlockReasonCode;
+  category?: string;
+  label?: number;
+  message: string;
+}
+
+export interface TextComplianceCheckRequest {
+  text: string;
+  scene?: 'watermark' | 'document' | 'image';
 }

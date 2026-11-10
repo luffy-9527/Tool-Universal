@@ -43,6 +43,7 @@ export function registerHealthRoutes(app: FastifyInstance, config: AppConfig): v
       pdfimages: pdfimages || true, // mupdf WASM fallback always available
       cutoutProvider: config.cutoutProvider,
       storageMode: config.storageMode,
+      contentSecurity: config.storageMode === 'cloudbase' ? 'wx-openapi-v2+local' : 'local-guard',
     };
   });
 }
