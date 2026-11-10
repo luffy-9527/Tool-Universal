@@ -370,7 +370,7 @@ async function startConvert() {
   } catch (err: any) {
     const msg = err?.message || 'PDF 处理失败';
     if (isComplianceError(err)) {
-      showComplianceBlockModal(msg);
+      showComplianceBlockModal(msg, err);
     }
     emit('error', msg);
   }

@@ -82,6 +82,9 @@
       :error-message="errorMessage"
       :original-total-size="originalTotalSize"
     />
+
+    <!-- Branded Content Security Compliance Dialog -->
+    <ComplianceDialog />
   </view>
 
   <view v-else class="not-found">
@@ -93,6 +96,7 @@
 import { computed, ref } from 'vue';
 import { onLoad, onShareAppMessage } from '@dcloudio/uni-app';
 import { getToolById, type OutputFileRef, type ToolMeta } from '@tool-universal/shared';
+import ComplianceDialog from '@/components/ComplianceDialog.vue';
 import FilePickerBox from '@/components/FilePickerBox.vue';
 import TaskProgress from '@/components/TaskProgress.vue';
 import ToolIcon from '@/components/ToolIcon.vue';

@@ -212,7 +212,7 @@ async function startConvert() {
   } catch (err: any) {
     const msg = err?.message || '处理失败';
     if (isComplianceError(err)) {
-      showComplianceBlockModal(msg);
+      showComplianceBlockModal(msg, err);
     }
     emit('error', msg);
   }

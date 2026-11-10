@@ -1,3 +1,4 @@
+import { reactive } from 'vue';
 import {
   COMPLIANCE_UNAVAILABLE_MESSAGE,
   checkCustomTextComplianceLocal,
@@ -16,6 +17,22 @@ export class ComplianceBlockedError extends Error {
   }
 }
 
+export interface ComplianceDialogState {
+  visible: boolean;
+  title: string;
+  category: string;
+  message: string;
+  isUnavailable: boolean;
+}
+
+export const complianceDialogState = reactive<ComplianceDialogState>({
+  visible: false,
+  title: '内容合规安全提示',
+  category: '',
+  message: '',
+  isUnavailable: false,
+});
+
 export function getLocalTextComplianceWarning(rawText: string): string {
   const verdict = checkCustomTextComplianceLocal(rawText);
   return verdict.allowed ? '' : verdict.message;
@@ -29,15 +46,25 @@ export function isComplianceError(err: unknown): boolean {
   return false;
 }
 
-export function showComplianceBlockModal(message: string): void {
-  if (typeof uni !== 'undefined' && typeof uni.showModal === 'function') {
-    uni.showModal({
-      title: '内容合规安全提示',
-      content: message,
-      showCancel: false,
-      confirmText: '去修改',
-    });
+export function showComplianceBlockModal(message: string, err?: unknown): void {
+  if (typeof uni !== 'undefined' && typeof uni.hideKeyboard === 'function') {
+    uni.hideKeyboard();
   }
+  const fromErr = err instanceof ComplianceBlockedError ? err.result : undefined;
+  const isUnavailable =
+    fromErr?.reasonCode === 'CONTENT_SECURITY_UNAVAILABLE' || message.includes('暂不可用');
+  const parsedCategoryMatch = /疑似包含([^，,。]+)/.exec(message);
+  const category = fromErr?.category || parsedCategoryMatch?.[1] || '';
+
+  complianceDialogState.isUnavailable = isUnavailable;
+  complianceDialogState.category = category;
+  complianceDialogState.title = isUnavailable ? '安全校验服务暂不可用' : '内容合规安全提示';
+  complianceDialogState.message = message.replace(/^内容合规拦截：\s*/, '');
+  complianceDialogState.visible = true;
+}
+
+export function closeComplianceDialog(): void {
+  complianceDialogState.visible = false;
 }
 
 /**

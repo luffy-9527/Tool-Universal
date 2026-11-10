@@ -385,7 +385,7 @@ async function startConvert() {
   } catch (err: any) {
     const msg = err?.message || '图像生成失败';
     if (isComplianceError(err)) {
-      showComplianceBlockModal(msg);
+      showComplianceBlockModal(msg, err);
     }
     emit('error', msg);
   }
