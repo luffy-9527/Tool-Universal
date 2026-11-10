@@ -77,6 +77,7 @@ export function registerTaskRoutes(
       return reply.code(400).send({ message: err?.message || '解析 PDF 页数失败' });
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      await storage.deleteCloudInputFiles([parsed.data.file]).catch(() => 0);
     }
   });
 }

@@ -52,6 +52,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   });
 
   app.addHook('onClose', async () => {
+    await taskManager.sweepExpiredTasks().catch(() => {});
     taskManager.stopHousekeeping();
   });
 

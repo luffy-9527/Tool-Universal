@@ -22,6 +22,18 @@ interface UploadFileMetaResponse {
   cos_file_id: string;
 }
 
+interface BatchDeleteResponse {
+  errcode: number;
+  errmsg: string;
+  delete_list?: Array<{
+    fileid: string;
+    status: number;
+    errmsg: string;
+  }>;
+}
+
+const BATCH_DELETE_LIMIT = 50;
+
 /**
  * 微信云托管容器内部可直接免 access_token 调用 api.weixin.qq.com/tcb/* 开放接口
  * 参考微信云托管文档：开放接口服务（云调用）
@@ -109,4 +121,61 @@ export async function uploadToCloudBase(
   }
 
   return { fileId: meta.file_id };
+}
+
+export async function deleteFromCloudBase(defaultEnv: string, fileIds: string[]): Promise<number> {
+  const uniqueCloudIds = Array.from(
+    new Set(fileIds.filter((id) => typeof id === 'string' && id.startsWith('cloud://')))
+  );
+  if (uniqueCloudIds.length === 0) {
+    return 0;
+  }
+
+  const groupedByEnv = new Map<string, string[]>();
+  for (const fileId of uniqueCloudIds) {
+    const envId = extractEnvFromFileId(fileId) || defaultEnv;
+    if (!envId) continue;
+    const list = groupedByEnv.get(envId);
+    if (list) {
+      list.push(fileId);
+    } else {
+      groupedByEnv.set(envId, [fileId]);
+    }
+  }
+
+  let deletedCount = 0;
+
+  for (const [envId, envFileIds] of groupedByEnv.entries()) {
+    for (let i = 0; i < envFileIds.length; i += BATCH_DELETE_LIMIT) {
+      const chunk = envFileIds.slice(i, i + BATCH_DELETE_LIMIT);
+      const res = await fetch(`${WX_OPENAPI_BASE}/tcb/batchdeletefile`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          env: envId,
+          fileid_list: chunk,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(
+          `云存储批量删除失败 (HTTP ${res.status})${errText ? `: ${errText.slice(0, 120)}` : ''}`
+        );
+      }
+
+      const data = (await res.json()) as BatchDeleteResponse;
+      if (data.errcode !== 0) {
+        throw new Error(`云存储 batchdeletefile 错误: ${data.errmsg || data.errcode}`);
+      }
+
+      if (Array.isArray(data.delete_list) && data.delete_list.length > 0) {
+        deletedCount += data.delete_list.filter((item) => item.status === 0).length;
+      } else {
+        deletedCount += chunk.length;
+      }
+    }
+  }
+
+  return deletedCount;
 }

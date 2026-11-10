@@ -18,5 +18,6 @@ export interface StorageProvider {
     taskId: string
   ): Promise<OutputFileRef>;
   getLocalFileByToken(fileToken: string): Promise<{ path: string; fileName: string; mimeType: string } | null>;
+  deleteCloudInputFiles(refs: UploadedFileRef[]): Promise<number>;
   cleanupExpired(ttlMs: number): Promise<number>;
 }

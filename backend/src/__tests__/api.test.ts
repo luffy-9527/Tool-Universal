@@ -7,7 +7,7 @@ import * as mupdf from 'mupdf';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import sharp from 'sharp';
 import * as XLSXNamespace from 'xlsx';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 const XLSX: typeof XLSXNamespace =
   (XLSXNamespace as unknown as { default?: typeof XLSXNamespace }).default ?? XLSXNamespace;
@@ -19,6 +19,7 @@ import {
 import { buildApp, listenApp, type AppContext } from '../app.js';
 import type { AppConfig } from '../config.js';
 import { extractImagesFromOfficeZip } from '../processors/officeProcessor.js';
+import { deleteFromCloudBase } from '../storage/cloudStorage.js';
 import { resolveFfmpegBin, runBinary } from '../utils/exec.js';
 
 async function createSamplePng(width = 120, height = 120, color = { r: 240, g: 245, b: 255 }): Promise<Buffer> {
@@ -1908,5 +1909,180 @@ describe('Tool-Universal Backend API & Processors', () => {
     // Alpha-masked PNG + rotated strip + vector seal figure extracted (at least 3 media image files!)
     const mediaKeys = Object.keys(cmpZip.files).filter((k) => k.startsWith('word/media/') && !cmpZip.files[k].dir);
     expect(mediaKeys.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('auto-cleans CloudBase temp inputs immediately and expired outputs by TTL', async () => {
+    const samplePdf = await createSamplePdf(2);
+    const sampleImg = await createSamplePng(80, 80);
+    const deletedBatches: Array<{ env: string; fileid_list: string[] }> = [];
+    let deleteShouldReturn502 = false;
+
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith('/tcb/batchdownloadfile')) {
+        const body = JSON.parse(String(init?.body || '{}'));
+        const fileId = body.file_list?.[0]?.fileid as string;
+        return new Response(
+          JSON.stringify({
+            errcode: 0,
+            errmsg: 'ok',
+            file_list: [
+              {
+                fileid: fileId,
+                download_url: fileId.endsWith('.pdf')
+                  ? 'https://mock-cos.example.com/input.pdf'
+                  : 'https://mock-cos.example.com/input.png',
+                status: 0,
+                errmsg: 'ok',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      if (url === 'https://mock-cos.example.com/input.pdf') {
+        return new Response(new Uint8Array(samplePdf), { status: 200 });
+      }
+      if (url === 'https://mock-cos.example.com/input.png') {
+        return new Response(new Uint8Array(sampleImg), { status: 200 });
+      }
+      if (url.endsWith('/tcb/uploadfile')) {
+        const body = JSON.parse(String(init?.body || '{}'));
+        return new Response(
+          JSON.stringify({
+            errcode: 0,
+            errmsg: 'ok',
+            url: 'https://mock-cos.example.com/upload',
+            token: 'tok',
+            authorization: 'auth',
+            file_id: `cloud://env-test.bucket/${body.path}`,
+            cos_file_id: 'cos_id',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      if (url === 'https://mock-cos.example.com/upload') {
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/tcb/batchdeletefile')) {
+        if (deleteShouldReturn502) {
+          return new Response('Bad Gateway', { status: 502 });
+        }
+        const body = JSON.parse(String(init?.body || '{}'));
+        deletedBatches.push(body);
+        return new Response(
+          JSON.stringify({
+            errcode: 0,
+            errmsg: 'ok',
+            delete_list: (body.fileid_list as string[]).map((fileid) => ({
+              fileid,
+              status: 0,
+              errmsg: 'ok',
+            })),
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+
+    const cloudTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tool-universal-cloud-cleanup-'));
+    let cloudCtx: AppContext | undefined;
+    try {
+      cloudCtx = await buildApp({
+        port: 0,
+        host: '127.0.0.1',
+        storageMode: 'cloudbase',
+        wxCloudEnv: 'env-test',
+        maxConcurrency: 1,
+        maxFileSize: 10 * 1024 * 1024,
+        fileTtlMs: 30 * 60 * 1000,
+        tmpRootDir: cloudTmpDir,
+        cutoutProvider: 'smart-chroma',
+        rembgEndpoint: '',
+      });
+
+      // 1. /api/pdf/inspect should clean up CloudBase input fileID right after inspection
+      const inspectCloudId = 'cloud://env-test.bucket/tmp-inputs/inspect_sample.pdf';
+      const inspectRes = await cloudCtx.app.inject({
+        method: 'POST',
+        url: '/api/pdf/inspect',
+        payload: {
+          file: {
+            fileId: inspectCloudId,
+            fileName: 'inspect_sample.pdf',
+            size: samplePdf.length,
+            source: 'cloudbase',
+          },
+        },
+      });
+      expect(inspectRes.statusCode).toBe(200);
+      expect(inspectRes.json().pageCount).toBe(2);
+      expect(deletedBatches.some((b) => b.fileid_list.includes(inspectCloudId))).toBe(true);
+
+      // 2. Task execution should clean input immediately, keep output before TTL, and clean output on TTL sweep
+      const taskInputCloudId = 'cloud://env-test.bucket/tmp-inputs/task_input.png';
+      const taskCreate = await cloudCtx.app.inject({
+        method: 'POST',
+        url: '/api/tasks',
+        payload: {
+          toolId: 'image-format-convert',
+          files: [
+            {
+              fileId: taskInputCloudId,
+              fileName: 'task_input.png',
+              size: sampleImg.length,
+              source: 'cloudbase',
+            },
+          ],
+          params: { imageFormat: 'jpg' },
+        },
+      });
+      expect(taskCreate.statusCode).toBe(202);
+      const completed = await waitForTask(cloudCtx.app, taskCreate.json().taskId);
+      expect(completed.status).toBe('completed');
+      const outputCloudId = completed.outputs[0].fileId as string;
+      expect(outputCloudId.startsWith('cloud://env-test.bucket/tmp-outputs/')).toBe(true);
+      expect(deletedBatches.some((b) => b.fileid_list.includes(taskInputCloudId))).toBe(true);
+      expect(deletedBatches.some((b) => b.fileid_list.includes(outputCloudId))).toBe(false);
+
+      // Not yet expired with large TTL
+      await cloudCtx.storage.cleanupExpired(60 * 60 * 1000);
+      expect(deletedBatches.some((b) => b.fileid_list.includes(outputCloudId))).toBe(false);
+
+      // Expired with ttlMs = 0
+      await cloudCtx.storage.cleanupExpired(0);
+      expect(deletedBatches.some((b) => b.fileid_list.includes(outputCloudId))).toBe(true);
+
+      // 3. Batch chunking >50 fileIDs
+      const beforeChunkCount = deletedBatches.length;
+      const manyIds = Array.from({ length: 55 }, (_, i) => `cloud://env-test.bucket/tmp-outputs/f_${i}.png`);
+      const deletedMany = await deleteFromCloudBase('env-test', manyIds);
+      expect(deletedMany).toBe(55);
+      expect(deletedBatches.slice(beforeChunkCount).map((b) => b.fileid_list.length)).toEqual([50, 5]);
+
+      // 4. Non-fatal resilience when /tcb/batchdeletefile returns HTTP 502 (e.g. whitelist not yet added)
+      deleteShouldReturn502 = true;
+      const resilientRes = await cloudCtx.app.inject({
+        method: 'POST',
+        url: '/api/pdf/inspect',
+        payload: {
+          file: {
+            fileId: 'cloud://env-test.bucket/tmp-inputs/resilient.pdf',
+            fileName: 'resilient.pdf',
+            size: samplePdf.length,
+            source: 'cloudbase',
+          },
+        },
+      });
+      expect(resilientRes.statusCode).toBe(200);
+      expect(resilientRes.json().pageCount).toBe(2);
+    } finally {
+      if (cloudCtx) {
+        await cloudCtx.app.close();
+      }
+      vi.unstubAllGlobals();
+      await fs.rm(cloudTmpDir, { recursive: true, force: true });
+    }
   });
 });

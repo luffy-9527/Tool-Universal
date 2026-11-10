@@ -34,7 +34,7 @@ export class TaskManager {
     if (this.cleanupTimer) return;
     this.cleanupTimer = setInterval(() => {
       void this.sweepExpiredTasks();
-    }, 5 * 60 * 1000);
+    }, 2 * 60 * 1000);
     this.cleanupTimer.unref();
   }
 
@@ -143,6 +143,7 @@ export class TaskManager {
         await fn().catch(() => {});
       }
       await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
+      await this.storage.deleteCloudInputFiles(request.files).catch(() => 0);
     }
   }
 }

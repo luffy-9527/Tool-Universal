@@ -5,12 +5,23 @@ import mime from 'mime-types';
 import type { OutputFileRef, UploadedFileRef } from '@tool-universal/shared';
 import type { AppConfig } from '../config.js';
 import type { ResolvedInputFile, StorageProvider } from './index.js';
-import { downloadFromCloudBase, extractEnvFromFileId, uploadToCloudBase } from './cloudStorage.js';
+import {
+  deleteFromCloudBase,
+  downloadFromCloudBase,
+  extractEnvFromFileId,
+  uploadToCloudBase,
+} from './cloudStorage.js';
 
 interface FileIndexEntry {
   path: string;
   fileName: string;
   mimeType: string;
+  createdAt: number;
+}
+
+interface CloudOutputEntry {
+  fileId: string;
+  env: string;
   createdAt: number;
 }
 
@@ -23,6 +34,7 @@ export class HybridStorageService implements StorageProvider {
   private readonly uploadsDir: string;
   private readonly outputsDir: string;
   private readonly fileIndex = new Map<string, FileIndexEntry>();
+  private readonly cloudOutputs = new Map<string, CloudOutputEntry>();
 
   constructor(private readonly config: AppConfig) {
     this.uploadsDir = path.join(config.tmpRootDir, 'uploads');
@@ -115,6 +127,11 @@ export class HybridStorageService implements StorageProvider {
       }
       const cloudPath = `tmp-outputs/${taskId}/${Date.now()}_${safeName}`;
       const { fileId } = await uploadToCloudBase(envId, localPath, cloudPath);
+      this.cloudOutputs.set(fileId, {
+        fileId,
+        env: envId,
+        createdAt: Date.now(),
+      });
       return {
         fileId,
         fileName: safeName,
@@ -167,16 +184,49 @@ export class HybridStorageService implements StorageProvider {
     }
   }
 
+  async deleteCloudInputFiles(refs: UploadedFileRef[]): Promise<number> {
+    const cloudIds = refs
+      .filter((ref) => ref.source === 'cloudbase' || ref.fileId.startsWith('cloud://'))
+      .map((ref) => ref.fileId);
+
+    if (cloudIds.length === 0) {
+      return 0;
+    }
+
+    try {
+      return await deleteFromCloudBase(this.config.wxCloudEnv, cloudIds);
+    } catch (err: any) {
+      console.warn('[storage] 云存储输入文件自动清理失败:', err?.message || err);
+      return 0;
+    }
+  }
+
   async cleanupExpired(ttlMs: number): Promise<number> {
     const now = Date.now();
     let removed = 0;
 
     for (const [token, entry] of this.fileIndex.entries()) {
-      if (now - entry.createdAt > ttlMs) {
+      if (now - entry.createdAt >= ttlMs) {
         await fs.rm(entry.path, { force: true }).catch(() => {});
         this.fileIndex.delete(token);
         removed++;
       }
+    }
+
+    // Sweep stale local uploads on disk
+    try {
+      const files = await fs.readdir(this.uploadsDir, { withFileTypes: true });
+      for (const file of files) {
+        if (!file.isFile()) continue;
+        const filePath = path.join(this.uploadsDir, file.name);
+        const stat = await fs.stat(filePath);
+        if (now - stat.mtimeMs >= ttlMs) {
+          await fs.rm(filePath, { force: true }).catch(() => {});
+          removed++;
+        }
+      }
+    } catch {
+      // ignore if directory not created yet
     }
 
     // Also sweep stale task output folders
@@ -186,12 +236,29 @@ export class HybridStorageService implements StorageProvider {
         if (!dir.isDirectory()) continue;
         const dirPath = path.join(this.outputsDir, dir.name);
         const stat = await fs.stat(dirPath);
-        if (now - stat.mtimeMs > ttlMs) {
+        if (now - stat.mtimeMs >= ttlMs) {
           await fs.rm(dirPath, { recursive: true, force: true }).catch(() => {});
         }
       }
     } catch {
       // ignore if directory not created yet
+    }
+
+    // Sweep expired CloudBase output files (tmp-outputs/...)
+    const expiredCloudIds: string[] = [];
+    for (const [fileId, entry] of this.cloudOutputs.entries()) {
+      if (now - entry.createdAt >= ttlMs) {
+        expiredCloudIds.push(fileId);
+        this.cloudOutputs.delete(fileId);
+      }
+    }
+
+    if (expiredCloudIds.length > 0) {
+      try {
+        removed += await deleteFromCloudBase(this.config.wxCloudEnv, expiredCloudIds);
+      } catch (err: any) {
+        console.warn('[storage] 云存储过期结果自动清理失败:', err?.message || err);
+      }
     }
 
     return removed;
