@@ -237,7 +237,10 @@ describe('Tool-Universal Backend API & Processors', () => {
       payload: { file: pdfRef },
     });
     expect(inspectRes.statusCode).toBe(200);
-    expect(inspectRes.json().pageCount).toBe(4);
+    const inspectBody = inspectRes.json();
+    expect(inspectBody.pageCount).toBe(4);
+    expect(inspectBody.pages).toHaveLength(4);
+    expect(inspectBody.pages[0].thumbnail).toMatch(/^data:image\/jpeg;base64,/);
 
     // 3. PDF split (select pages 2-3)
     const splitRes = await ctx.app.inject({
@@ -2386,5 +2389,157 @@ describe('Tool-Universal Backend API & Processors', () => {
       vi.unstubAllGlobals();
       await fs.rm(cloudSecTmp, { recursive: true, force: true });
     }
+  });
+
+  it('renders page thumbnails within 1MB CloudRun budget for 161-page PDFs and splits owner-encrypted PDFs without blank pages', async () => {
+    // 1. Build a 3-page PDF with distinct text and encrypt with an owner password (empty user password)
+    const rawDoc = await PDFDocument.create();
+    const font = await rawDoc.embedFont(StandardFonts.HelveticaBold);
+    for (let i = 1; i <= 3; i++) {
+      const page = rawDoc.addPage([400, 600]);
+      page.drawText(`ENCRYPTED PAGE ${i}`, {
+        x: 40,
+        y: 500,
+        size: 28,
+        font,
+        color: rgb(0.1, 0.1, 0.1),
+      });
+    }
+    const plainBytes = await rawDoc.save();
+
+    const mupdfSrc = mupdf.Document.openDocument(plainBytes, 'application/pdf').asPDF();
+    if (!mupdfSrc) throw new Error('Expected PDF document');
+    const ownerEncBuf = mupdfSrc.saveToBuffer('encrypt=aes-128,owner-password=owner123,user-password=');
+    const ownerEncryptedPdf = Buffer.from(ownerEncBuf.asUint8Array());
+    ownerEncBuf.destroy();
+
+    const userEncBuf = mupdfSrc.saveToBuffer('encrypt=aes-128,owner-password=owner123,user-password=secret');
+    const userEncryptedPdf = Buffer.from(userEncBuf.asUint8Array());
+    userEncBuf.destroy();
+    mupdfSrc.destroy();
+
+    // Upload owner-encrypted PDF
+    const encMp = createMultipartPayload([
+      { name: 'file', filename: 'owner_locked.pdf', mimeType: 'application/pdf', data: ownerEncryptedPdf },
+    ]);
+    const encUpload = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/files/upload',
+      headers: { 'content-type': `multipart/form-data; boundary=${encMp.boundary}` },
+      payload: encMp.payload,
+    });
+    const encRef = encUpload.json().file;
+
+    // Inspect owner-encrypted PDF should succeed and include thumbnails
+    const encInspectRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/pdf/inspect',
+      payload: { file: encRef },
+    });
+    expect(encInspectRes.statusCode).toBe(200);
+    const encInspect = encInspectRes.json();
+    expect(encInspect.pageCount).toBe(3);
+    expect(encInspect.pages).toHaveLength(3);
+    expect(encInspect.pages.every((p: any) => typeof p.thumbnail === 'string' && p.thumbnail.startsWith('data:image/jpeg;base64,'))).toBe(true);
+
+    // Split page 2 via extract-selected and verify rendered text + non-blank pixels
+    const splitExtractRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      payload: {
+        toolId: 'pdf-split',
+        files: [encRef],
+        params: { splitMode: 'extract-selected', pageRange: '2' },
+      },
+    });
+    const splitExtractTask = await waitForTask(ctx.app, splitExtractRes.json().taskId);
+    expect(splitExtractTask.status).toBe('completed');
+    const splitExtractDl = await ctx.app.inject({
+      method: 'GET',
+      url: splitExtractTask.outputs[0].downloadUrl,
+    });
+    const verifiedExtractDoc = mupdf.Document.openDocument(splitExtractDl.rawPayload, 'application/pdf');
+    expect(verifiedExtractDoc.countPages()).toBe(1);
+    const verifiedPage = verifiedExtractDoc.loadPage(0);
+    const extractedText = verifiedPage.toStructuredText().asText();
+    expect(extractedText).toContain('ENCRYPTED PAGE 2');
+    const pix = verifiedPage.toPixmap(mupdf.Matrix.scale(1, 1), mupdf.ColorSpace.DeviceRGB, false);
+    const pixels = pix.getPixels();
+    let hasDarkPixels = false;
+    for (let i = 0; i < pixels.length; i += 3) {
+      if (pixels[i] < 240 || pixels[i + 1] < 240 || pixels[i + 2] < 240) {
+        hasDarkPixels = true;
+        break;
+      }
+    }
+    pix.destroy();
+    verifiedPage.destroy();
+    verifiedExtractDoc.destroy();
+    expect(hasDarkPixels).toBe(true);
+
+    // Split each-page mode should produce 3 non-blank PDFs
+    const splitEachRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      payload: {
+        toolId: 'pdf-split',
+        files: [encRef],
+        params: { splitMode: 'each-page' },
+      },
+    });
+    const splitEachTask = await waitForTask(ctx.app, splitEachRes.json().taskId);
+    expect(splitEachTask.status).toBe('completed');
+    expect(splitEachTask.outputs).toHaveLength(3);
+    const page3Dl = await ctx.app.inject({
+      method: 'GET',
+      url: splitEachTask.outputs[2].downloadUrl,
+    });
+    const verifiedPage3Doc = mupdf.Document.openDocument(page3Dl.rawPayload, 'application/pdf');
+    const verifiedPage3 = verifiedPage3Doc.loadPage(0);
+    expect(verifiedPage3.toStructuredText().asText()).toContain('ENCRYPTED PAGE 3');
+    verifiedPage3.destroy();
+    verifiedPage3Doc.destroy();
+
+    // User-password-protected PDF should fail cleanly with a clear Chinese error
+    const userMp = createMultipartPayload([
+      { name: 'file', filename: 'user_locked.pdf', mimeType: 'application/pdf', data: userEncryptedPdf },
+    ]);
+    const userUpload = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/files/upload',
+      headers: { 'content-type': `multipart/form-data; boundary=${userMp.boundary}` },
+      payload: userMp.payload,
+    });
+    const userInspectRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/pdf/inspect',
+      payload: { file: userUpload.json().file },
+    });
+    expect(userInspectRes.statusCode).toBe(400);
+    expect(userInspectRes.json().message).toContain('密码');
+
+    // 2. Large 161-page PDF inspect returns all 161 pages + thumbnails safely under CloudRun 1MB response cap
+    const largePdf = await createSamplePdf(161);
+    const largeMp = createMultipartPayload([
+      { name: 'file', filename: 'thesis_161.pdf', mimeType: 'application/pdf', data: largePdf },
+    ]);
+    const largeUpload = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/files/upload',
+      headers: { 'content-type': `multipart/form-data; boundary=${largeMp.boundary}` },
+      payload: largeMp.payload,
+    });
+    const largeInspectRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/pdf/inspect',
+      payload: { file: largeUpload.json().file },
+    });
+    expect(largeInspectRes.statusCode).toBe(200);
+    expect(Buffer.byteLength(largeInspectRes.body, 'utf8')).toBeLessThan(950 * 1024);
+    const largeInspect = largeInspectRes.json();
+    expect(largeInspect.pageCount).toBe(161);
+    expect(largeInspect.pages).toHaveLength(161);
+    expect(largeInspect.pages[0].thumbnail).toMatch(/^data:image\/jpeg;base64,/);
+    expect(largeInspect.pages[160].pageNumber).toBe(161);
   });
 });

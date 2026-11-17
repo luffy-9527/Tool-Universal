@@ -105,10 +105,20 @@ export interface TaskRecord {
   updatedAt: number;
 }
 
+export interface PdfInspectPageMeta {
+  pageNumber: number;
+  width: number;
+  height: number;
+  /** Lightweight JPEG data URL (`data:image/jpeg;base64,...`) for page thumbnail preview */
+  thumbnail?: string;
+}
+
 export interface PdfInspectResponse {
   pageCount: number;
   fileName: string;
-  pages: { pageNumber: number; width: number; height: number }[];
+  pages: PdfInspectPageMeta[];
+  /** True when thumbnail rendering stopped early to stay within mobile/CloudRun payload budget */
+  thumbnailsTruncated?: boolean;
 }
 
 export interface CapabilitiesResponse {

@@ -93,7 +93,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { onLoad, onShareAppMessage } from '@dcloudio/uni-app';
 import { getToolById, type OutputFileRef, type ToolMeta } from '@tool-universal/shared';
 import ComplianceDialog from '@/components/ComplianceDialog.vue';
@@ -116,6 +116,15 @@ const progress = ref(0);
 const stageText = ref('');
 const outputs = ref<OutputFileRef[]>([]);
 const errorMessage = ref('');
+
+watch(files, () => {
+  if (!processing.value) {
+    outputs.value = [];
+    errorMessage.value = '';
+    progress.value = 0;
+    stageText.value = '';
+  }
+});
 
 onLoad((query) => {
   const id = typeof query?.id === 'string' ? query.id : '';

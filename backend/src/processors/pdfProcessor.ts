@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import {
   checkCustomTextComplianceLocal,
   type OutputFileRef,
+  type PdfInspectPageMeta,
   type PdfInspectResponse,
   type ToolParams,
   type WatermarkOptions,
@@ -51,22 +52,111 @@ async function createWatermarkStampPng(text: string, color: string, opacity: num
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
+const MAX_INSPECT_THUMBNAIL_BYTES = 680 * 1024; // Stay safely under WeChat CloudRun 1 MB callContainer response limit
+
+function openMuPdfDocument(bytes: Buffer | Uint8Array): mupdf.PDFDocument {
+  const doc = mupdf.Document.openDocument(bytes, 'application/pdf');
+  if (doc.needsPassword()) {
+    const ok = doc.authenticatePassword('');
+    if (!ok) {
+      doc.destroy();
+      throw new Error('该 PDF 已设置打开密码，请先解除密码后再上传处理');
+    }
+  }
+  const pdfDoc = doc.asPDF();
+  if (!pdfDoc) {
+    doc.destroy();
+    throw new Error('无法解析 PDF 文档结构，请确认文件未损坏');
+  }
+  return pdfDoc;
+}
+
+function saveMuPdfCleanBytes(doc: mupdf.PDFDocument): Uint8Array {
+  const outBuf = doc.saveToBuffer('encrypt=none,garbage=compact,compress,clean');
+  try {
+    return Uint8Array.from(outBuf.asUint8Array());
+  } finally {
+    outBuf.destroy();
+  }
+}
+
+function extractPagesWithMuPdf(srcDoc: mupdf.PDFDocument, zeroBasedIndices: number[]): Uint8Array {
+  const dstDoc = new mupdf.PDFDocument();
+  let graftMap: mupdf.PDFGraftMap | undefined;
+  try {
+    graftMap = dstDoc.newGraftMap();
+    for (const idx of zeroBasedIndices) {
+      graftMap.graftPage(-1, srcDoc, idx);
+    }
+    return saveMuPdfCleanBytes(dstDoc);
+  } finally {
+    graftMap?.destroy();
+    dstDoc.destroy();
+  }
+}
+
 export async function inspectPdfFile(pdfPath: string, fileName: string): Promise<PdfInspectResponse> {
   const bytes = await fs.readFile(pdfPath);
-  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
-  const pages = doc.getPages().map((page, index) => {
-    const { width, height } = page.getSize();
+  const pdfDoc = openMuPdfDocument(bytes);
+  try {
+    const pageCount = pdfDoc.countPages();
+    const pages: PdfInspectPageMeta[] = [];
+
+    // Adapt thumbnail resolution & JPEG quality based on total page count so even 160+ page PDFs preview completely within 680 KB
+    const targetWidth = pageCount <= 40 ? 140 : pageCount <= 120 ? 110 : 92;
+    const jpegQuality = pageCount <= 40 ? 55 : pageCount <= 120 ? 45 : 38;
+    let totalThumbnailBytes = 0;
+    let thumbnailsTruncated = false;
+
+    for (let i = 0; i < pageCount; i++) {
+      const page = pdfDoc.loadPage(i);
+      try {
+        const bounds = page.getBounds();
+        const width = Math.max(1, Math.round(bounds[2] - bounds[0]));
+        const height = Math.max(1, Math.round(bounds[3] - bounds[1]));
+
+        let thumbnail: string | undefined;
+        if (!thumbnailsTruncated) {
+          const scale = Math.min(0.28, targetWidth / Math.max(width, 1));
+          const matrix = mupdf.Matrix.scale(scale, scale);
+          let pixmap: mupdf.Pixmap | undefined;
+          try {
+            pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false, true);
+            const jpeg = pixmap.asJPEG(jpegQuality, false);
+            const dataUrl = `data:image/jpeg;base64,${Buffer.from(jpeg).toString('base64')}`;
+            if (totalThumbnailBytes + dataUrl.length <= MAX_INSPECT_THUMBNAIL_BYTES) {
+              thumbnail = dataUrl;
+              totalThumbnailBytes += dataUrl.length;
+            } else {
+              thumbnailsTruncated = true;
+            }
+          } catch {
+            // Skip thumbnail for problematic page without aborting inspection
+          } finally {
+            pixmap?.destroy();
+          }
+        }
+
+        pages.push({
+          pageNumber: i + 1,
+          width,
+          height,
+          ...(thumbnail ? { thumbnail } : {}),
+        });
+      } finally {
+        page.destroy();
+      }
+    }
+
     return {
-      pageNumber: index + 1,
-      width: Math.round(width),
-      height: Math.round(height),
+      pageCount,
+      fileName,
+      pages,
+      ...(thumbnailsTruncated ? { thumbnailsTruncated: true } : {}),
     };
-  });
-  return {
-    pageCount: pages.length,
-    fileName,
-    pages,
-  };
+  } finally {
+    pdfDoc.destroy();
+  }
 }
 
 export function parsePageSelection(totalPages: number, pages?: number[], pageRange?: string): number[] {
@@ -101,8 +191,17 @@ export async function applyPdfWatermark(
   outputPdfPath: string,
   opts?: WatermarkOptions
 ): Promise<void> {
-  const bytes = await fs.readFile(inputPdfPath);
-  const pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const rawBytes = await fs.readFile(inputPdfPath);
+  let pdfDoc = await PDFDocument.load(rawBytes, { ignoreEncryption: true });
+  if (pdfDoc.isEncrypted) {
+    const decryptedDoc = openMuPdfDocument(rawBytes);
+    try {
+      const cleanBytes = saveMuPdfCleanBytes(decryptedDoc);
+      pdfDoc = await PDFDocument.load(cleanBytes);
+    } finally {
+      decryptedDoc.destroy();
+    }
+  }
   const text = (opts?.text || '仅供内部参考 · 禁止外传').trim();
   const localCompliance = checkCustomTextComplianceLocal(text);
   if (!localCompliance.allowed) {
@@ -215,27 +314,31 @@ export async function renderPdfToImages(
   await fs.mkdir(outDir, { recursive: true });
 
   if (await isBinaryAvailable('pdftoppm', '-v')) {
-    const prefix = path.join(outDir, 'page');
-    const formatFlag = imageFormat === 'jpg' ? '-jpeg' : '-png';
+    try {
+      const prefix = path.join(outDir, 'page');
+      const formatFlag = imageFormat === 'jpg' ? '-jpeg' : '-png';
 
-    await runBinary('pdftoppm', [formatFlag, '-r', String(dpi), pdfPath, prefix], {
-      timeoutMs: 180_000,
-    });
+      await runBinary('pdftoppm', [formatFlag, '-r', String(dpi), pdfPath, prefix], {
+        timeoutMs: 180_000,
+      });
 
-    const entries = await fs.readdir(outDir);
-    const ext = imageFormat === 'jpg' ? '.jpg' : '.png';
-    const matched = entries
-      .filter((f) => f.startsWith('page') && f.toLowerCase().endsWith(ext))
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+      const entries = await fs.readdir(outDir);
+      const ext = imageFormat === 'jpg' ? '.jpg' : '.png';
+      const matched = entries
+        .filter((f) => f.startsWith('page') && f.toLowerCase().endsWith(ext))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
-    if (matched.length > 0) {
-      return matched.map((f) => path.join(outDir, f));
+      if (matched.length > 0) {
+        return matched.map((f) => path.join(outDir, f));
+      }
+    } catch {
+      // Fall back to MuPDF WASM if pdftoppm fails on encrypted/special PDFs
     }
   }
 
   // MuPDF WASM zero-dependency fallback
   const bytes = await fs.readFile(pdfPath);
-  const doc = mupdf.Document.openDocument(bytes, 'application/pdf');
+  const doc = openMuPdfDocument(bytes);
   try {
     const count = doc.countPages();
     if (count === 0) {
@@ -348,58 +451,77 @@ export async function processPdfTool(ctx: ProcessContext): Promise<OutputFileRef
 
   if (toolId === 'pdf-merge') {
     ctx.updateProgress(35, '正在合并多份 PDF...');
-    const merged = await PDFDocument.create();
-    for (let i = 0; i < ctx.localInputPaths.length; i++) {
-      const bytes = await fs.readFile(ctx.localInputPaths[i]);
-      const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
-      const copiedPages = await merged.copyPages(src, src.getPageIndices());
-      copiedPages.forEach((p) => merged.addPage(p));
-      ctx.updateProgress(
-        35 + Math.round(((i + 1) / ctx.localInputPaths.length) * 55),
-        `已合并 ${i + 1}/${ctx.localInputPaths.length} 份`
-      );
+    const merged = new mupdf.PDFDocument();
+    try {
+      for (let i = 0; i < ctx.localInputPaths.length; i++) {
+        const bytes = await fs.readFile(ctx.localInputPaths[i]);
+        const src = openMuPdfDocument(bytes);
+        let graftMap: mupdf.PDFGraftMap | undefined;
+        try {
+          graftMap = merged.newGraftMap();
+          const count = src.countPages();
+          for (let p = 0; p < count; p++) {
+            graftMap.graftPage(-1, src, p);
+          }
+        } finally {
+          graftMap?.destroy();
+          src.destroy();
+        }
+        ctx.updateProgress(
+          35 + Math.round(((i + 1) / ctx.localInputPaths.length) * 55),
+          `已合并 ${i + 1}/${ctx.localInputPaths.length} 份`
+        );
+      }
+      const outPath = path.join(ctx.workDir, 'merged.pdf');
+      await fs.writeFile(outPath, saveMuPdfCleanBytes(merged));
+      outputs.push(await ctx.addOutput(outPath, 'PDF合并文档.pdf', 'application/pdf'));
+      return outputs;
+    } finally {
+      merged.destroy();
     }
-    const outPath = path.join(ctx.workDir, 'merged.pdf');
-    await fs.writeFile(outPath, await merged.save());
-    outputs.push(await ctx.addOutput(outPath, 'PDF合并文档.pdf', 'application/pdf'));
-    return outputs;
   }
 
   if (toolId === 'pdf-split') {
     const srcPath = ctx.localInputPaths[0];
     const bytes = await fs.readFile(srcPath);
-    const srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
-    const totalPages = srcDoc.getPageCount();
-    const splitMode = params.splitMode || 'extract-selected';
+    const srcDoc = openMuPdfDocument(bytes);
+    try {
+      const totalPages = srcDoc.countPages();
+      const splitMode = params.splitMode || 'extract-selected';
 
-    if (splitMode === 'each-page') {
-      ctx.updateProgress(35, `正在逐页拆分为 ${totalPages} 份文档...`);
-      for (let i = 0; i < totalPages; i++) {
-        const single = await PDFDocument.create();
-        const [copied] = await single.copyPages(srcDoc, [i]);
-        single.addPage(copied);
-        const outPath = path.join(ctx.workDir, `page_${i + 1}.pdf`);
-        await fs.writeFile(outPath, await single.save());
-        outputs.push(await ctx.addOutput(outPath, `第${i + 1}页.pdf`, 'application/pdf'));
+      if (splitMode === 'each-page') {
+        ctx.updateProgress(35, `正在逐页拆分为 ${totalPages} 份文档...`);
+        for (let i = 0; i < totalPages; i++) {
+          const singleBytes = extractPagesWithMuPdf(srcDoc, [i]);
+          const outPath = path.join(ctx.workDir, `page_${i + 1}.pdf`);
+          await fs.writeFile(outPath, singleBytes);
+          outputs.push(await ctx.addOutput(outPath, `第${i + 1}页.pdf`, 'application/pdf'));
+          if ((i + 1) % 5 === 0 || i + 1 === totalPages) {
+            ctx.updateProgress(
+              35 + Math.round(((i + 1) / totalPages) * 58),
+              `已拆分 ${i + 1}/${totalPages} 页`
+            );
+          }
+        }
+        return outputs;
       }
+
+      const picked = parsePageSelection(totalPages, params.pages, params.pageRange);
+      if (picked.length === 0) {
+        throw new Error(`请选择有效的页码（当前 PDF 共 ${totalPages} 页）`);
+      }
+
+      ctx.updateProgress(55, `正在高保真提取 ${picked.length} 页...`);
+      const indices = picked.map((p) => p - 1);
+      const extractedBytes = extractPagesWithMuPdf(srcDoc, indices);
+
+      const outPath = path.join(ctx.workDir, 'extracted.pdf');
+      await fs.writeFile(outPath, extractedBytes);
+      outputs.push(await ctx.addOutput(outPath, `PDF提取_${picked.length}页.pdf`, 'application/pdf'));
       return outputs;
+    } finally {
+      srcDoc.destroy();
     }
-
-    const picked = parsePageSelection(totalPages, params.pages, params.pageRange);
-    if (picked.length === 0) {
-      throw new Error(`请选择有效的页码（当前 PDF 共 ${totalPages} 页）`);
-    }
-
-    ctx.updateProgress(55, `正在提取 ${picked.length} 页...`);
-    const outDoc = await PDFDocument.create();
-    const indices = picked.map((p) => p - 1);
-    const copied = await outDoc.copyPages(srcDoc, indices);
-    copied.forEach((p) => outDoc.addPage(p));
-
-    const outPath = path.join(ctx.workDir, 'extracted.pdf');
-    await fs.writeFile(outPath, await outDoc.save());
-    outputs.push(await ctx.addOutput(outPath, `PDF提取_${picked.length}页.pdf`, 'application/pdf'));
-    return outputs;
   }
 
   if (toolId === 'pdf-watermark') {
