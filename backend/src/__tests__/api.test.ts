@@ -2143,7 +2143,7 @@ describe('Tool-Universal Backend API & Processors', () => {
     await fs.writeFile(samplePdfPath, await createSamplePdf(1));
     await expect(
       applyPdfWatermark(samplePdfPath, blockedOutPath, { enabled: true, text: '办·假·证' })
-    ).rejects.toThrow(/内容合规拦截/);
+    ).rejects.toThrow(/违规信息/);
     await expect(fs.access(blockedOutPath)).rejects.toThrow();
 
     // 3. WeChat wxa/msg_sec_check v2 integration + fail-closed + CloudBase input cleanup on rejection

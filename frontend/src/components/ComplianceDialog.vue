@@ -22,11 +22,8 @@
         <text class="card-title">{{ complianceDialogState.title }}</text>
 
         <view class="status-pill">
-          <text v-if="complianceDialogState.isUnavailable">已暂停生成 · 请稍后重试</text>
-          <text v-else-if="complianceDialogState.category">
-            已阻断生成 · 风险类别：{{ complianceDialogState.category }}
-          </text>
-          <text v-else>已阻断生成 · 触发内容安全策略</text>
+          <text v-if="complianceDialogState.isUnavailable">安全检测服务异常 · 请稍后重试</text>
+          <text v-else>已拦截 · 输入内容包含违规信息</text>
         </view>
       </view>
 
@@ -36,14 +33,14 @@
         </view>
 
         <view v-if="!complianceDialogState.isUnavailable" class="safe-tip">
-          <text class="tip-label">合规建议</text>
-          <text class="tip-text">请使用真实、合法的业务用途描述（如“仅供实名认证使用 · 他用无效”）。</text>
+          <text class="tip-label">合规提示</text>
+          <text class="tip-text">请使用合法合规的业务描述文字。</text>
         </view>
       </view>
 
       <view class="card-footer">
         <button class="confirm-btn" hover-class="confirm-btn--hover" @click="closeComplianceDialog">
-          {{ complianceDialogState.isUnavailable ? '我知道了' : '返回修改文字' }}
+          {{ complianceDialogState.isUnavailable ? '我知道了' : '返回修改' }}
         </button>
       </view>
     </view>

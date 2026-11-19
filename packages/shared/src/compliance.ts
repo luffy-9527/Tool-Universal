@@ -2,15 +2,20 @@ import type { ComplianceSuggest, TextComplianceResult } from './api.js';
 
 export const MAX_CUSTOM_TEXT_LENGTH = 500;
 
+export const STANDARD_COMPLIANCE_BLOCK_MESSAGE =
+  '输入内容包含敏感违规信息，请修改后重试。';
+
 export const COMPLIANCE_UNAVAILABLE_MESSAGE =
   '内容合规安全检测服务暂不可用，为保障内容安全已暂停本次生成，请检查网络或稍后重试。';
 
 export function isComplianceBlockMessage(message?: string): boolean {
   if (!message) return false;
   return (
-    message.startsWith('内容合规拦截') ||
-    message.startsWith('内容合规安全检测') ||
-    message.startsWith('内容安全校验')
+    message.includes('违规信息') ||
+    message.includes('合规风险') ||
+    message.includes('内容合规') ||
+    message.includes('安全检测') ||
+    message.includes('敏感')
   );
 }
 
@@ -39,17 +44,16 @@ export function mapWechatComplianceLabel(label?: number): string {
   }
 }
 
+/**
+ * 微信小程序内容安全规范（严格遵守《微信小程序平台运营规范常见拒绝情形3.2》）：
+ * 小程序内检测结果安全说明仅需提示用户所发布内容含违规信息即可，
+ * 严禁向用户直接暴露具体敏感词分类、底层命中特征或算法标签。
+ */
 export function formatComplianceBlockMessage(
-  category?: string,
-  suggest: ComplianceSuggest = 'risky'
+  _category?: string,
+  _suggest: ComplianceSuggest = 'risky'
 ): string {
-  if (category) {
-    return `内容合规拦截：您输入的自定义文字疑似包含${category}，已阻断本次生成，请修改为合法合规的表述后重试。`;
-  }
-  if (suggest === 'review') {
-    return '内容合规拦截：您输入的自定义文字存在安全合规风险，已暂停本次生成，请修改为合法合规的表述后重试。';
-  }
-  return '内容合规拦截：您输入的自定义文字包含违法违规或敏感信息，已阻断本次生成，请修改为合法合规的表述后重试。';
+  return STANDARD_COMPLIANCE_BLOCK_MESSAGE;
 }
 
 interface LocalComplianceRule {
@@ -240,7 +244,7 @@ export function checkCustomTextComplianceLocal(rawText: string): TextComplianceR
       source: 'local-guard',
       reasonCode: 'CONTENT_LENGTH_EXCEEDED',
       category: '超长限制内容',
-      message: `内容合规拦截：自定义文字最多支持 ${MAX_CUSTOM_TEXT_LENGTH} 个字符，请精简后重试。`,
+      message: `输入内容超出字数限制（最多 ${MAX_CUSTOM_TEXT_LENGTH} 字），请精简后重试。`,
     };
   }
 

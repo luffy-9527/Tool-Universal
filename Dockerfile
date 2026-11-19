@@ -25,9 +25,11 @@ RUN pnpm --filter @tool-universal/shared build && \
 # ================= 运行时精简镜像 =================
 FROM node:20-bookworm-slim AS runner
 
-# 国内构建加速源（如在海外构建可删除或注释）
+# 国内构建加速源（优先使用腾讯云/微信云托管镜像源，加速 apt 依赖拉取）
 RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources; \
+      sed -i 's/deb.debian.org/mirrors.cloud.tencent.com/g' /etc/apt/sources.list.d/debian.sources; \
+    elif [ -f /etc/apt/sources.list ]; then \
+      sed -i 's/deb.debian.org/mirrors.cloud.tencent.com/g' /etc/apt/sources.list; \
     fi
 
 # 安装底层转换引擎 + 中文字体（防止 Word/Excel/PPT 转 PDF 出现中文方块乱码）

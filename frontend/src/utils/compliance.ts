@@ -27,7 +27,7 @@ export interface ComplianceDialogState {
 
 export const complianceDialogState = reactive<ComplianceDialogState>({
   visible: false,
-  title: '内容合规安全提示',
+  title: '内容安全提示',
   category: '',
   message: '',
   isUnavailable: false,
@@ -53,13 +53,13 @@ export function showComplianceBlockModal(message: string, err?: unknown): void {
   const fromErr = err instanceof ComplianceBlockedError ? err.result : undefined;
   const isUnavailable =
     fromErr?.reasonCode === 'CONTENT_SECURITY_UNAVAILABLE' || message.includes('暂不可用');
-  const parsedCategoryMatch = /疑似包含([^，,。]+)/.exec(message);
-  const category = fromErr?.category || parsedCategoryMatch?.[1] || '';
 
   complianceDialogState.isUnavailable = isUnavailable;
-  complianceDialogState.category = category;
-  complianceDialogState.title = isUnavailable ? '安全校验服务暂不可用' : '内容合规安全提示';
-  complianceDialogState.message = message.replace(/^内容合规拦截：\s*/, '');
+  complianceDialogState.category = '';
+  complianceDialogState.title = isUnavailable ? '安全校验服务暂不可用' : '内容安全提示';
+  complianceDialogState.message = isUnavailable
+    ? '内容安全检测服务暂不可用，为保障合规已暂停生成，请稍后重试。'
+    : '输入内容包含敏感违规信息，已拦截本次生成，请修改后重试。';
   complianceDialogState.visible = true;
 }
 
@@ -71,7 +71,7 @@ export function closeComplianceDialog(): void {
  * 统一校验自定义文字合规性：
  * 1. 先执行零延迟本地关键词与变形字符拦截；
  * 2. 再调用云端 `/api/compliance/text-check`（云托管环境会自动通过微信 wxa/msg_sec_check V2 复核）；
- * 3. 命中风险或安全服务不可用时均即时阻断并抛出标准化提示。
+ * 3. 命中风险或安全服务不可用时均即时阻断并规范提示（仅提示用户所发布内容含违规信息）。
  */
 export async function ensureCustomTextCompliant(
   rawText: string,
@@ -114,7 +114,7 @@ export async function ensureCustomTextCompliant(
         suggest: 'risky',
         source: 'wechat-msg-sec-check',
         reasonCode: 'CONTENT_COMPLIANCE_BLOCKED',
-        message: '内容合规拦截：您输入的自定义文字包含违法违规或敏感信息，已阻断本次生成，请修改后重试。',
+        message: '输入内容包含敏感违规信息，请修改后重试。',
       }
     );
   }
